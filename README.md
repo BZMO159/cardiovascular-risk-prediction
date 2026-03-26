@@ -58,13 +58,13 @@ The goal is to identify key risk factors and build predictive models based on cl
 ##  Visualizations
 
 ### Correlation matrix
-![Correlation](figures/correlation.png)
+![Correlation](correlation.png)
 
 ### PCA
-![PCA](figures/pca.png)
+![PCA](pca.png)
 
 ### Feature importance (Random Forest)
-![Feature Importance](figures/feature_importance.png)
+![Feature Importance](feature_importance.png)
 
 ---
 
