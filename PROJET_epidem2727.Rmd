@@ -1,0 +1,400 @@
+
+```{r}
+install.packages("factoextra", dependencies = TRUE)
+```
+
+```{r}
+# ================================
+# 0) LIBRAIRIES
+# ================================
+library(ggplot2)
+library(corrplot)
+library(FactoMineR)
+library(factoextra)
+library(randomForest)
+library(caret)
+```
+
+
+```{r}
+# ================================
+# 1) IMPORTATION DES DONNEES
+# ================================
+df <- read.csv(file.choose(), sep = ";")
+
+head(df)
+str(df)
+```
+
+
+```{r}
+# ================================
+# 2) NETTOYAGE ET PREPARATION
+# ================================
+
+# Supprimer id s'il existe
+if ("id" %in% names(df)) {
+  df$id <- NULL
+}
+
+# Création du BMI
+df$BMI <- df$weight / (df$height / 100)^2
+
+# Conversion de l'âge en années
+df$age_years <- df$age / 365
+
+# ===== NEW FEATURES =====
+df$pulse_pressure <- df$ap_hi - df$ap_lo
+df$mean_arterial_pressure <- (df$ap_hi + 2 * df$ap_lo) / 3
+
+# Conversion des variables catégorielles en facteurs
+factor_vars <- c("cardio", "gender", "cholesterol", "gluc", "smoke", "alco", "active")
+
+for (v in factor_vars) {
+  if (v %in% names(df)) {
+    df[[v]] <- as.factor(df[[v]])
+  }
+}
+```
+
+
+```{r}
+# ================================
+# 3) SUPPRESSION DES VALEURS ABERRANTES
+# ================================
+# On filtre les valeurs physiologiquement incohérentes
+df <- subset(df, ap_hi > 0 & ap_hi < 300)
+df <- subset(df, ap_lo > 0 & ap_lo < 200)
+df <- subset(df, ap_hi > ap_lo)
+df <- subset(df, BMI > 10 & BMI < 80)
+df <- subset(df, height > 100 & height < 250)
+df <- subset(df, weight > 20 & weight < 300)
+
+# Vérification après nettoyage
+dim(df)
+str(df)
+```
+```{r}
+table(df$active)
+```
+
+
+```{r}
+# ================================
+# 4) EXPLORATION DES DONNEES
+# ================================
+dim(df)
+colSums(is.na(df))
+summary(df)
+
+summary(df$age_years)
+summary(df$BMI)
+summary(df$ap_hi)
+summary(df$ap_lo)
+
+aggregate(age_years ~ cardio, data = df, mean)
+aggregate(BMI ~ cardio, data = df, mean)
+
+# Proportion malades / non malades
+prop.table(table(df$cardio))
+```
+
+
+```{r}
+# ================================
+# 5) VISUALISATIONS
+# ================================
+
+# Histogramme de l'âge
+ggplot(df, aes(x = age_years)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black") +
+  labs(title = "Distribution de l'âge", x = "Âge (années)", y = "Effectif")
+
+# Boxplot BMI selon cardio
+ggplot(df, aes(x = cardio, y = BMI)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "BMI selon la présence de maladie", x = "Cardio", y = "BMI")
+
+# Histogramme pression systolique
+ggplot(df, aes(x = ap_hi)) +
+  geom_histogram(bins = 30, fill = "orange", color = "black") +
+  labs(title = "Distribution de la pression systolique", x = "ap_hi", y = "Effectif")
+
+# Histogramme pression diastolique
+ggplot(df, aes(x = ap_lo)) +
+  geom_histogram(bins = 30, fill = "tomato", color = "black") +
+  labs(title = "Distribution de la pression diastolique", x = "ap_lo", y = "Effectif")
+```
+
+
+```{r}
+# ================================
+# 6) MATRICE DE CORRELATION
+# ================================
+numeric_vars <- df[, c(
+  "age_years",
+  "BMI",
+  "ap_hi",
+  "ap_lo",
+  "pulse_pressure",
+  "mean_arterial_pressure"
+)]
+
+corrplot(cor(numeric_vars), method = "color", addCoef.col = "black")
+```
+
+
+```{r}
+# ================================
+# 7) ACP (PCA)
+# ================================
+# On garde seulement les variables quantitatives
+pca_data <- df[, c("age_years", "BMI", "ap_hi", "ap_lo")]
+
+res.pca <- PCA(pca_data, scale.unit = TRUE, graph = FALSE)
+
+# Visualisation des individus (version légère)
+fviz_pca_ind(
+  res.pca,
+  habillage = df$cardio,
+  label = "none",
+  title = "ACP des individus selon cardio"
+)
+
+# Visualisation des variables
+fviz_pca_var(
+  res.pca,
+  repel = TRUE,
+  title = "ACP - Cercle des corrélations"
+)
+```
+
+
+```{r}
+# ================================
+# 8) CLUSTERING K-MEANS
+# ================================
+data_cluster <- scale(pca_data)
+
+set.seed(123)
+kmeans_model <- kmeans(data_cluster, centers = 3, nstart = 25)
+
+df$cluster_kmeans <- as.factor(kmeans_model$cluster)
+
+# Visualisation simple des clusters
+plot(
+  df$age_years, df$BMI,
+  col = df$cluster_kmeans,
+  pch = 19,
+  xlab = "Age (années)",
+  ylab = "BMI",
+  main = "Clusters K-means"
+)
+
+# Tableau cluster / cardio
+table(df$cluster_kmeans, df$cardio)
+```
+```{r}
+set.seed(123)
+sample_idx <- sample(1:nrow(data_cluster), 5000)
+data_sample <- data_cluster[sample_idx, ]
+
+fviz_nbclust(data_sample, kmeans, method = "wss")
+```
+```{r}
+aggregate(cbind(age_years, BMI, ap_hi, ap_lo) ~ cluster_kmeans, data = df, mean)
+```
+```{r}
+table(df$cluster_kmeans, df$cardio)
+```
+
+
+```{r}
+# ================================
+# 9) CLUSTERING HIERARCHIQUE SUR ECHANTILLON
+# ================================
+# HCPC sur tout le dataset est trop lourd en mémoire
+set.seed(123)
+idx_hc <- sample(1:nrow(df), 2000)
+
+pca_data_sample <- pca_data[idx_hc, ]
+cardio_sample <- df$cardio[idx_hc]
+
+res.pca.sample <- PCA(pca_data_sample, scale.unit = TRUE, graph = FALSE)
+
+hcpc_res <- HCPC(res.pca.sample, graph = FALSE)
+
+# Visualisation clustering hiérarchique
+fviz_cluster(
+  hcpc_res,
+  geom = "point",
+  main = "Clustering hiérarchique après ACP (échantillon)"
+)
+
+# Tableau cluster hiérarchique / cardio
+table(hcpc_res$data.clust$clust, cardio_sample)
+```
+
+
+```{r}
+# ================================
+# 10) TRAIN / TEST SPLIT
+# ================================
+set.seed(123)
+index <- sample(1:nrow(df), 0.7 * nrow(df))
+
+train <- df[index, ]
+test  <- df[-index, ]
+```
+
+
+```{r}
+# ================================
+# 11) REGRESSION LOGISTIQUE - MODELE INITIAL
+# ================================
+model_log <- glm(
+  cardio ~ age_years + BMI + ap_hi + ap_lo +
+  gender + cholesterol + gluc + smoke + alco + active,
+  data = train,
+  family = binomial
+)
+
+
+summary(model_log)
+```
+
+
+```{r}
+# ================================
+# 12) SELECTION DE VARIABLES BACKWARD
+# ================================
+model_step <- step(model_log, direction = "backward", trace = TRUE)
+
+summary(model_step)
+```
+
+
+```{r}
+# ================================
+# 13) PREDICTIONS MODELE LOGISTIQUE FINAL
+# ================================
+pred_prob_log <- predict(model_step, newdata = test, type = "response")
+pred_log <- ifelse(pred_prob_log > 0.5, 1, 0)
+# TEST AUTRE SEUIL
+pred_log_04 <- ifelse(pred_prob_log > 0.4, 1, 0)
+pred_log_04 <- factor(pred_log_04, levels = levels(test$cardio))
+
+confusionMatrix(pred_log_04, test$cardio, positive = "1")
+pred_log <- as.factor(pred_log)
+
+# Remettre les mêmes niveaux que test$cardio
+pred_log <- factor(pred_log, levels = levels(test$cardio))
+
+# Matrice de confusion
+cm_log <- confusionMatrix(pred_log, test$cardio, positive = "1")
+cm_log
+
+# Precision, Recall, F1-score
+precision_log <- cm_log$byClass["Precision"]
+recall_log <- cm_log$byClass["Recall"]
+f1_log <- 2 * (precision_log * recall_log) / (precision_log + recall_log)
+
+precision_log
+recall_log
+f1_log
+```
+
+
+```{r}
+# ================================
+# 14) RANDOM FOREST
+# ================================
+set.seed(123)
+control <- trainControl(method = "cv", number = 5)
+
+grid_rf <- expand.grid(mtry = c(3,4,5,6))
+
+rf_tuned <- train(
+cardio ~ age_years + BMI + ap_hi + ap_lo + pulse_pressure + mean_arterial_pressure +
+gender + cholesterol + gluc + smoke + alco + active,
+data = train,
+method = "rf",
+trControl = control,
+tuneGrid = grid_rf,
+ntree = 500
+)
+
+rf_tuned
+
+print(rf_tuned)
+
+pred_rf <- predict(rf_tuned, newdata = test)
+cm_rf <- confusionMatrix(pred_rf, test$cardio, positive="1")
+
+
+
+# Precision, Recall, F1-score
+precision_rf <- cm_rf$byClass["Precision"]
+recall_rf <- cm_rf$byClass["Recall"]
+f1_rf <- 2 * (precision_rf * recall_rf) / (precision_rf + recall_rf)
+
+precision_rf
+recall_rf
+f1_rf
+```
+```{r}
+importance <- varImp(rf_tuned)
+plot(importance)
+```
+
+
+```{r}
+# ================================
+# 15) COMPARAISON DES MODELES
+# ================================
+results <- data.frame(
+  Model = c("Logistic Stepwise", "Random Forest"),
+  Accuracy = c(as.numeric(cm_log$overall["Accuracy"]), as.numeric(cm_rf$overall["Accuracy"])),
+  Precision = c(as.numeric(precision_log), as.numeric(precision_rf)),
+  Recall = c(as.numeric(recall_log), as.numeric(recall_rf)),
+  F1_Score = c(as.numeric(f1_log), as.numeric(f1_rf))
+)
+
+print(results)
+```
+
+
+```{r}
+# ================================
+# 16) BONUS : AJOUT DU CLUSTER K-MEANS AU MODELE LOGISTIQUE
+# ================================
+train$cluster_kmeans <- as.factor(train$cluster_kmeans)
+test$cluster_kmeans  <- as.factor(test$cluster_kmeans)
+
+model_log_cluster <- glm(
+  cardio ~ age_years + BMI + ap_hi + ap_lo + gender + cholesterol + gluc + smoke + alco + active + cluster_kmeans,
+  data = train,
+  family = binomial
+)
+
+summary(model_log_cluster)
+
+pred_prob_cluster <- predict(model_log_cluster, newdata = test, type = "response")
+pred_cluster <- ifelse(pred_prob_cluster > 0.5, 1, 0)
+pred_cluster <- as.factor(pred_cluster)
+pred_cluster <- factor(pred_cluster, levels = levels(test$cardio))
+
+cm_cluster <- confusionMatrix(pred_cluster, test$cardio, positive = "1")
+cm_cluster
+
+precision_cluster <- cm_cluster$byClass["Precision"]
+recall_cluster <- cm_cluster$byClass["Recall"]
+f1_cluster <- 2 * (precision_cluster * recall_cluster) / (precision_cluster + recall_cluster)
+
+precision_cluster
+recall_cluster
+f1_cluster
+```
+
+
+
